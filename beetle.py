@@ -938,11 +938,22 @@ class GunBeetle(Beetle):
     def get_gun_data_from(self, gun_packet):
         return gun_packet.data[0] == 1
     
+    # def handle_ext_packet(self, ext_packet): # type: ignore
+    #     if isinstance(ext_packet, GunUpdatePacket):
+    #         gun_packet_to_send = self.create_gun_packet(ext_packet.bullets)
+    #         if self.is_debug_printing:
+    #             self.mPrint2(f"""Updating gun state with: {gun_packet_to_send}""")
+    #         return gun_packet_to_send
+    #     return None
+
     def handle_ext_packet(self, ext_packet): # type: ignore
         if isinstance(ext_packet, GunUpdatePacket):
-            gun_packet_to_send = self.create_gun_packet(ext_packet.bullets)
-            if self.is_debug_printing:
-                self.mPrint2(f"""Updating gun state with: {gun_packet_to_send}""")
+            bullets = ext_packet.bullets
+            
+            # Add more robust debugging
+            self.mPrint2(f"Creating gun packet with bullets: {bullets}")
+            
+            gun_packet_to_send = self.create_gun_packet(bullets)
             return gun_packet_to_send
         return None
     
@@ -951,7 +962,16 @@ class GunBeetle(Beetle):
                 self.sender_seq_num, self.create_gun_packet_data(bullets))
         return gun_packet_to_send
     
+    # def create_gun_packet_data(self, bullets: int):
+    #     return bytearray([bullets])
+
+
     def create_gun_packet_data(self, bullets: int):
+        # Ensure bullets is in valid range and is a valid integer
+        bullets = max(0, min(6, int(bullets)))
+        self.mPrint2(f"Formatting gun packet data with bullets: {bullets}")
+        
+        # Create a bytearray with the bullet count
         return bytearray([bullets])
 
 class VestBeetle(Beetle):
@@ -959,8 +979,21 @@ class VestBeetle(Beetle):
         super().__init__(beetle_mac_addr, outgoing_queue, incoming_queue, color)
 
     def handle_raw_data_packet(self, raw_data_packet):
+        
+        
         is_hit = raw_data_packet.data[0] == 1
-        player_hp = raw_data_packet.data[1] if len(raw_data_packet.data) > 1 else 100
+        player_hp = raw_data_packet.data[1] if len(raw_data_packet.data) > 1 else 0
+        shield_active = raw_data_packet.data[2] == 1 if len(raw_data_packet.data) > 2 else False
+        shields_remaining = raw_data_packet.data[3] if len(raw_data_packet.data) > 3 else 0
+        
+        print("\n===== BLUNO REPORTED STATE =====")
+        print(f"Hit Flag: {is_hit}")
+        print(f"Bluno Internal HP: {player_hp}")
+        print(f"Shield Active: {shield_active}")
+        print(f"Shields Remaining: {shields_remaining}")
+        print("================================\n")
+    
+    # Rest of your code...
         
         internal_vest_packet = VestPacket(self.beetle_mac_addr, is_hit, player_hp)
         player_id = get_player_id_for(self.beetle_mac_addr)
@@ -981,20 +1014,49 @@ class VestBeetle(Beetle):
         if self.is_debug_printing:
             self.mPrint2(f"Received vest data from {self.beetle_mac_addr}: [isHit: {is_hit}, HP: {player_hp}]")
 
+    # def handle_ext_packet(self, ext_packet):
+    #     if isinstance(ext_packet, VestUpdatePacket):
+    #         # Create a vest packet with hit status, HP, and action command
+    #         vest_packet_to_send = self.create_vest_packet(
+    #             ext_packet.is_hit, 
+    #             ext_packet.player_hp,
+    #             ext_packet.action_command if hasattr(ext_packet, 'action_command') else None
+    #         )
+            
+    #         if self.is_debug_printing:
+    #             self.mPrint2(f"Updating vest state with: {vest_packet_to_send}")
+            
+    #         return vest_packet_to_send
+        
+    #     return None
+
+    '''The root issue is a type mismatch in your packet handling flow:
+
+In DummyVestUpdate.send_action_command(), you're creating a raw binary packet and placing it directly 
+into game_state_update_queue
+But in the VestBeetle.handle_ext_packet() method, it's expecting a VestUpdatePacket object, not a raw binary packet
+When a binary packet is received, the condition isinstance(ext_packet, VestUpdatePacket) fails, and the method returns None
+This causes the packet to be dropped before it ever reaches the Arduino
+
+This explains your debug output: you see "Received packet from external comms" (showing the packet 
+made it to the Python code's queue), but the LED never blinks because the packet doesn't make it to the Arduino.
+'''
     def handle_ext_packet(self, ext_packet):
         if isinstance(ext_packet, VestUpdatePacket):
             # Create a vest packet with hit status, HP, and action command
             vest_packet_to_send = self.create_vest_packet(
-                ext_packet.is_hit, 
+                ext_packet.is_hit,
                 ext_packet.player_hp,
                 ext_packet.action_command if hasattr(ext_packet, 'action_command') else None
             )
-            
             if self.is_debug_printing:
                 self.mPrint2(f"Updating vest state with: {vest_packet_to_send}")
-            
             return vest_packet_to_send
-        
+        elif isinstance(ext_packet, bytes):
+            # Pass through raw binary packets directly
+            if self.is_debug_printing:
+                self.mPrint2(f"Passing through raw binary packet: {ext_packet}")
+            return ext_packet
         return None
 
     def create_vest_packet(self, is_hit: bool, player_hp: int, action_command: str = None):
