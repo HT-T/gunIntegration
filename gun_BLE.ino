@@ -11,7 +11,7 @@ void retransmitLastPacket();
 
 // Game constants
 #define RELOAD_TIME 500
-#define MAX_BULLETS 6
+#define MAX_BULLETS 10
 #define GUN_MAGAZINE_SIZE 6
 #define BUTTON_DEBOUNCE_DELAY 10
 
@@ -69,11 +69,89 @@ void setup() {
   setupBle();
 }
 
+// Function to populate packet data
+void getPacketDataFor(bool mIsFired, byte packetData[PACKET_DATA_SIZE]) {
+  packetData[0] = mIsFired ? 1 : 0;
+}
+
+// void loop() {
+//   // First, check trigger and fire IR if needed - do this EVERY loop
+//   checkTriggerAndFire();
+//   if (!hasHandshake()) {
+//     handshakeStatus = doHandshake();
+//   }
+//   unsigned long currentTime = millis();
+//   // Retransmit last sent packet on timeout
+//   if (isWaitingForAck && (currentTime - lastRetransmitTime) >= RETRANSMIT_DELAY
+//       && (currentTime - lastRawDataSentTime) >= BLE_TIMEOUT) { 
+//     // Maintain at least RETRANSMIT_DELAY millisecs in between consecutive retransmits
+//     if (numRetries < MAX_RETRANSMITS) {
+//       // Retransmit only if numRetries less than max limit
+//       retransmitLastPacket();
+//       numRetries += 1;
+//     } else {
+//       // Clear serial input/output buffers to restart transmission from clean state
+//       clearSerialInputBuffer();
+//       Serial.flush();
+//       // Laptop might have disconnected, re-enter handshake
+//       handshakeStatus = STAT_NONE;
+//       numRetries = 0;
+//     }
+//   } else if (!isWaitingForAck && (currentTime - lastSentPacketTime) >= TRANSMIT_DELAY
+//       && hasRawData()) { // Send raw data packets(if any)
+//     // Only send new packet if previous packet has been ACK-ed and there's new sensor data to send
+//     //   but maintain TRANSMIT_DELAY millisecs in between sensor data packet transmissions
+//     // Read sensor data and generate a BlePacket encapsulating that data
+//     BlePacket mRawDataPacket = createRawDataPacket();
+//     // Send updated sensor data to laptop
+//     sendPacket(mRawDataPacket);
+//     // Update last sent packet to latest sensor data packet
+//     lastSentPacket = mRawDataPacket;
+//     // Update last raw data packet sent time to maintain transmit delay
+//     lastSentPacketTime = millis();
+//     // Update last raw data packet sent time to track timeout
+//     lastRawDataSentTime = lastSentPacketTime;
+//     isWaitingForAck = true;
+//   } else if (!isWaitingForAck && 
+//       (currentTime - lastRawDataSentTime) >= KEEP_ALIVE_INTERVAL &&
+//       (currentTime - lastKeepAliveTime) >= KEEP_ALIVE_INTERVAL &&
+//       (currentTime - lastSentPacketTime) >= TRANSMIT_DELAY) {
+//     // Keep alive interval has passed since the last sensor/keep alive packet transmission but no sensor data is available to transmit
+//     // -> Send keep alive packet periodically when no sensor packet is transmitted so laptop knows Beetle is responding
+//     BlePacket keepAlivePacket = createKeepAlivePacket(senderSeqNum);
+//     sendPacket(keepAlivePacket);
+//     // Update last raw data packet sent time to maintain transmit delay
+//     lastSentPacketTime = millis();
+//     // Update lastSentPacketTime to support periodic keep alive packet transmission
+//     lastKeepAliveTime = lastSentPacketTime;
+//     // Don't require ACK for keep alive packets
+//   }
+//   // Always process incoming packets regardless of what sender logic does
+//   if ((millis() - lastReadPacketTime) >= READ_PACKET_DELAY) { // Handle incoming packets
+//     // Received some bytes from laptop, process them wwhile maintaining at least READ_PACKET_DELAY
+//     //   in between reading of 2 consecutive packets 
+//     processAllIncomingPackets();
+//   }
+  
+//   // Handle reloading
+//   // if (isReloading()) {
+//   //   if ((millis() & 0xFFFF) - lastReloadTime >= RELOAD_TIME) {
+//   //     bulletCount = MAX_BULLETS;
+//   //     setReloading(false);
+//   //   }
+//   // }
+// }
+
+// Modified loop function
 void loop() {
+  // First, check trigger and fire IR if needed - do this EVERY loop
+  checkTriggerAndFire();
+  
   if (!hasHandshake()) {
     handshakeStatus = doHandshake();
   }
   unsigned long currentTime = millis();
+  
   // Retransmit last sent packet on timeout
   if (isWaitingForAck && (currentTime - lastRetransmitTime) >= RETRANSMIT_DELAY
       && (currentTime - lastRawDataSentTime) >= BLE_TIMEOUT) { 
@@ -91,9 +169,8 @@ void loop() {
       numRetries = 0;
     }
   } else if (!isWaitingForAck && (currentTime - lastSentPacketTime) >= TRANSMIT_DELAY
-      && hasRawData()) { // Send raw data packets(if any)
+      && hasRawData()) { // Send raw data packets if gun was fired
     // Only send new packet if previous packet has been ACK-ed and there's new sensor data to send
-    //   but maintain TRANSMIT_DELAY millisecs in between sensor data packet transmissions
     // Read sensor data and generate a BlePacket encapsulating that data
     BlePacket mRawDataPacket = createRawDataPacket();
     // Send updated sensor data to laptop
@@ -126,13 +203,18 @@ void loop() {
     processAllIncomingPackets();
   }
   
-  // Handle reloading
-  // if (isReloading()) {
-  //   if ((millis() & 0xFFFF) - lastReloadTime >= RELOAD_TIME) {
-  //     bulletCount = MAX_BULLETS;
-  //     setReloading(false);
-  //   }
-  // }
+  // Handle reloading - re-enable this!
+  if (isReloading()) {
+    if ((millis() & 0xFFFF) - lastReloadTime >= RELOAD_TIME) {
+      bulletCount = MAX_BULLETS;
+      setReloading(false);
+    }
+  }
+  
+  // Reset isFired flag if BLE has acknowledged the shot
+  if (!isWaitingForAck && isFired) {
+    isFired = false;
+  }
 }
 
 HandshakeStatus doHandshake() {
@@ -350,6 +432,9 @@ void handleGamePacket(const BlePacket &gamePacket) {
   uint8_t newBulletCount = getBulletCountFrom(gamePacket);
   bulletCount = newBulletCount;  // Directly update bullet count
   setReloading(false);           // Ensure not in reloading state
+  if (bulletCount == 0) {
+    isFired = false;
+  }
 }
 
 
@@ -384,7 +469,67 @@ void sendShot() {
  * Checks whether the connected sensors of this Beetle has raw data to send to laptop.
  * Returns true when there's raw data to transmit (gun fire)
  */
+// bool hasRawData() {
+//   // Check if the trigger is pressed
+//   bool currentTrigger = digitalRead(TRIGGER_PIN);
+  
+//   if (currentTrigger == LOW && getLastTrigger() == HIGH) {
+//     delay(BUTTON_DEBOUNCE_DELAY); // Debounce
+    
+//     if (digitalRead(TRIGGER_PIN) == LOW) { // Still pressed after debounce
+//       if (bulletCount > 0 && !isReloading()) {
+//         // Send IR signal
+//         sendShot();
+//         bulletCount--;
+//         // Set flag that gun was fired
+//         isFired = true;
+        
+//         // Save trigger state
+//         setLastTrigger(currentTrigger);
+        
+//         // Tell BLE there's data to send
+//         return true;
+//       }
+//     }
+//   }
+  
+//   // Save trigger state
+//   setLastTrigger(currentTrigger);
+  
+//   // No need to send data
+//   isFired = false;
+//   return false;
+// }
+
 bool hasRawData() {
+  // Only check if the gun was fired
+  return isFired;
+}
+
+// New function to detect trigger and send IR separately from BLE
+// void checkTriggerAndFire() {
+//   // Check if the trigger is pressed
+//   bool currentTrigger = digitalRead(TRIGGER_PIN);
+  
+//   if (currentTrigger == LOW && getLastTrigger() == HIGH) {
+//     delay(BUTTON_DEBOUNCE_DELAY); // Debounce
+    
+//     if (digitalRead(TRIGGER_PIN) == LOW) { // Still pressed after debounce
+//       if (bulletCount > 0 && !isReloading()) {
+//         // Send IR signal immediately
+//         sendShot();
+//         bulletCount--;
+//         // Set flag that gun was fired - for BLE reporting
+//         isFired = true;
+//       }
+//     }
+//   }
+  
+//   // Save trigger state
+//   setLastTrigger(currentTrigger);
+// }
+
+void checkTriggerAndFire() {
   // Check if the trigger is pressed
   bool currentTrigger = digitalRead(TRIGGER_PIN);
   
@@ -392,28 +537,22 @@ bool hasRawData() {
     delay(BUTTON_DEBOUNCE_DELAY); // Debounce
     
     if (digitalRead(TRIGGER_PIN) == LOW) { // Still pressed after debounce
+      
+      
       if (bulletCount > 0 && !isReloading()) {
-        // Send IR signal
+        // Send IR signal immediately
         sendShot();
         bulletCount--;
-        // Set flag that gun was fired
+        // Set flag that gun was fired - for BLE reporting
         isFired = true;
         
-        // Save trigger state
-        setLastTrigger(currentTrigger);
         
-        // Tell BLE there's data to send
-        return true;
-      }
+      } 
     }
   }
   
   // Save trigger state
   setLastTrigger(currentTrigger);
-  
-  // No need to send data
-  isFired = false;
-  return false;
 }
 
 void processGivenPacket(const BlePacket &packet) {
@@ -610,7 +749,7 @@ void gunSetup() {
   pinMode(TRIGGER_PIN, INPUT_PULLUP);
   pinMode(IR_LED_PIN, OUTPUT);
   digitalWrite(IR_LED_PIN, LOW);
-  
+  Serial.begin(BAUDRATE);
   bulletCount = MAX_BULLETS;
   gunFlags = 0x04; // Set firstRun flag only
 }
